@@ -12,15 +12,23 @@ import streamlit as st
 APP_CONFIG_PATH = Path(os.getenv(
     "APP_CONFIG_PATH", Path(__file__).parent / "app_config.json"))
 
+# Manifest columns. preprocess.py writes the same columns.
 REQUIRED_COLS = {
     "clip_id",
     "guid",
-    "start_sec",
-    "end_sec",
-    "duration_sec",
+    "start_ms",
+    "end_ms",
+    "duration_ms",
     "video_filename",
     "audio_filename",
 }
+
+# The label that opens the field for the order of the languages
+MIXED = "Mixed"
+
+
+def is_mixed(label: str) -> bool:
+    return label.strip().casefold() == MIXED.casefold()
 
 
 def ensure_parent_dir(path: Path) -> None:
@@ -53,6 +61,31 @@ def get_db_path(config: dict[str, Any]) -> Path:
     return APP_CONFIG_PATH.parent / db_path
 
 
+def get_language_dirs(config: dict[str, Any]) -> dict[str, Path]:
+    """
+    :returns: the clip directory of each language in the config,
+        `<data_basepath>/<data_subpath>`; a relative `data_basepath` is
+        relative to the directory of the config file
+    """
+    basepath = config.get("data_basepath")
+    if not basepath:
+        st.error(f"No data_basepath in {APP_CONFIG_PATH}.")
+        st.stop()
+    dirs = {}
+    for language, lang_cfg in config.get("languages", {}).items():
+        subpath = lang_cfg.get("data_subpath")
+        if not subpath or Path(subpath).is_absolute():
+            st.error(f"Language {language} in {APP_CONFIG_PATH} needs a "
+                     f"relative data_subpath.")
+            st.stop()
+        dirs[language] = APP_CONFIG_PATH.parent / basepath / subpath
+    return dirs
+
+
+def get_labels(config: dict[str, Any], language: str) -> list[str]:
+    return list(config["languages"][language].get("labels", []))
+
+
 def get_user_config(config: dict[str, Any], username: str) -> dict[str, Any] | None:
     return config.get("users", {}).get(username)
 
@@ -79,9 +112,9 @@ def init_db() -> None:
             clip_id TEXT NOT NULL,
             dataset_name TEXT DEFAULT '',
             guid TEXT,
-            start_sec REAL,
-            end_sec REAL,
-            duration_sec REAL,
+            start_ms INTEGER,
+            end_ms INTEGER,
+            duration_ms INTEGER,
             video_filename TEXT,
             audio_filename TEXT,
             video_codec_used TEXT,
@@ -98,78 +131,59 @@ def init_db() -> None:
     )
 
     existing_cols = {row[1] for row in cur.execute("PRAGMA table_info(annotation_events)").fetchall()}
-    if "dataset_name" not in existing_cols:
-        cur.execute("ALTER TABLE annotation_events ADD COLUMN dataset_name TEXT DEFAULT ''")
-    if "notes" not in existing_cols:
-        cur.execute("ALTER TABLE annotation_events ADD COLUMN notes TEXT DEFAULT ''")
-    if "mixed_order" not in existing_cols:
-        cur.execute("ALTER TABLE annotation_events ADD COLUMN mixed_order TEXT DEFAULT ''")
-
     conn.commit()
     conn.close()
-
-
-def load_manifest(clips_dir: Path) -> pd.DataFrame:
-    manifest = clips_dir / "clips_manifest.csv"
-    if not manifest.exists():
-        st.error(f"Missing manifest: {manifest}")
+    if "start_ms" not in existing_cols:
+        st.error(f"{DATABASE_PATH} has clip times in seconds, not in "
+                 "milliseconds. Migrate it before use.")
         st.stop()
 
+
+def load_manifest(manifest: Path, language: str) -> pd.DataFrame:
+    """
+    Reads the manifest of one video. Its clips are in the directory of the
+    manifest, and `dataset_name` is the video stem (the `guid` column).
+    """
     df = pd.read_csv(manifest)
     missing = REQUIRED_COLS - set(df.columns)
     if missing:
-        st.error(f"Manifest missing columns: {sorted(missing)}")
+        st.error(f"Manifest {manifest} missing columns: {sorted(missing)}")
         st.stop()
 
-    dataset_name = clips_dir.name
+    clips_dir = manifest.parent
     df["clip_id"] = df["clip_id"].astype(str)
     df["guid"] = df["guid"].astype(str)
-    df["dataset_name"] = dataset_name
-    df["unique_clip_id"] = dataset_name + "::" + df["clip_id"]
+    df["language"] = language
+    df["dataset_name"] = df["guid"]
+    df["unique_clip_id"] = df["dataset_name"] + "::" + df["clip_id"]
     df["video_path"] = df["video_filename"].apply(lambda x: str(clips_dir / x))
     df["audio_path"] = df["audio_filename"].apply(lambda x: str(clips_dir / x))
     df["video_exists"] = df["video_path"].apply(os.path.exists)
     return df
 
 
-def get_effective_clips_dirs(config: dict[str, Any], user_cfg: dict[str, Any]) -> list[Path]:
-    clips_dirs = user_cfg.get("clips_dirs")
-    if clips_dirs:
-        return [Path(p) for p in clips_dirs]
-
-    clips_dir = user_cfg.get("clips_dir")
-    if isinstance(clips_dir, list):
-        return [Path(p) for p in clips_dir]
-    if clips_dir:
-        return [Path(clips_dir)]
-
-    default_dir = config.get("default", {}).get("clips_dir")
-    return [Path(default_dir)] if default_dir else []
-
-
 def load_user_manifests(config: dict[str, Any], user_cfg: dict[str, Any]) -> pd.DataFrame:
-    frames = [load_manifest(clips_dir) for clips_dir in get_effective_clips_dirs(config, user_cfg)]
+    """
+    :returns: the clips of every `*.manifest.csv` in the clip directory of
+        each language of the user, in the order of the languages, the
+        manifest file names and the manifest rows
+    """
+    language_dirs = get_language_dirs(config)
+    frames = []
+    for language in user_cfg.get("languages", []):
+        if language not in language_dirs:
+            st.error(f"Unknown language {language} for this user in "
+                     f"{APP_CONFIG_PATH}.")
+            st.stop()
+        clips_dir = language_dirs[language]
+        if not clips_dir.is_dir():
+            st.error(f"Clip directory of {language} not found: {clips_dir}")
+            st.stop()
+        frames.extend(load_manifest(manifest, language)
+                      for manifest in sorted(clips_dir.glob("*.manifest.csv")))
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
-
-
-def apply_assignment_filter(df: pd.DataFrame, user_cfg: dict[str, Any]) -> pd.DataFrame:
-    assigned_clip_ids = user_cfg.get("assigned_clip_ids")
-    assigned_guids = user_cfg.get("assigned_guids")
-    assigned_unique_clip_ids = user_cfg.get("assigned_unique_clip_ids")
-
-    if assigned_clip_ids:
-        allowed = {str(x) for x in assigned_clip_ids}
-        df = df[df["clip_id"].isin(allowed)].copy()
-    if assigned_guids:
-        allowed = {str(x) for x in assigned_guids}
-        df = df[df["guid"].astype(str).isin(allowed)].copy()
-    if assigned_unique_clip_ids:
-        allowed = {str(x) for x in assigned_unique_clip_ids}
-        df = df[df["unique_clip_id"].isin(allowed)].copy()
-
-    return df.reset_index(drop=True)
 
 
 def load_latest_annotations(username: str) -> dict[str, dict[str, Any]]:
@@ -231,7 +245,7 @@ def insert_annotation_event(
     cur.execute(
         """
         INSERT INTO annotation_events (
-            username, clip_id, dataset_name, guid, start_sec, end_sec, duration_sec,
+            username, clip_id, dataset_name, guid, start_ms, end_ms, duration_ms,
             video_filename, audio_filename, video_codec_used, label, notes, mixed_order,
             updated_at, view_count, total_time_sec, last_visit_started_at, is_edit
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?)
@@ -241,9 +255,9 @@ def insert_annotation_event(
             str(manifest_row["clip_id"]),
             str(manifest_row["dataset_name"]),
             str(manifest_row["guid"]),
-            float(manifest_row["start_sec"]),
-            float(manifest_row["end_sec"]),
-            float(manifest_row["duration_sec"]),
+            int(manifest_row["start_ms"]),
+            int(manifest_row["end_ms"]),
+            int(manifest_row["duration_ms"]),
             manifest_row["video_filename"],
             manifest_row["audio_filename"],
             manifest_row.get("video_codec_used", ""),
@@ -282,10 +296,6 @@ def start_timer_for_clip(unique_clip_id: str) -> None:
         st.session_state.ann[unique_clip_id] = item
         st.session_state.current_clip_id = unique_clip_id
         st.session_state.clip_enter_time = now
-
-
-def get_effective_labels(config: dict[str, Any], user_cfg: dict[str, Any]) -> list[str]:
-    return list(user_cfg.get("labels", config.get("default", {}).get("labels", [])))
 
 
 def save_annotation_if_needed(row: pd.Series, label: str, notes: str, mixed_order: str = "") -> bool:
@@ -352,7 +362,7 @@ def maybe_auto_save_label_only(row: pd.Series, selected_label: str) -> None:
         row,
         selected_label,
         notes=current_notes,
-        mixed_order=current_mixed_order if selected_label == "Mixed" else "",
+        mixed_order=current_mixed_order if is_mixed(selected_label) else "",
         view_count=item.get("view_count", 1),
         total_time_sec=item.get("total_time_sec", 0.0),
         last_visit_started_at=item.get("last_visit_started_at"),
@@ -361,12 +371,12 @@ def maybe_auto_save_label_only(row: pd.Series, selected_label: str) -> None:
 
     item["label"] = selected_label
     item["notes"] = current_notes
-    item["mixed_order"] = current_mixed_order if selected_label == "Mixed" else ""
+    item["mixed_order"] = current_mixed_order if is_mixed(selected_label) else ""
     item["saved"] = True
     st.session_state.ann[unique_clip_id] = item
     st.session_state.saved_labels[unique_clip_id] = selected_label
     st.session_state.saved_notes[unique_clip_id] = current_notes
-    st.session_state.saved_mixed_orders[unique_clip_id] = current_mixed_order if selected_label == "Mixed" else ""
+    st.session_state.saved_mixed_orders[unique_clip_id] = current_mixed_order if is_mixed(selected_label) else ""
     st.session_state.flash_message = f"Saved: {selected_label}"
 
 
@@ -378,7 +388,7 @@ def save_current_clip_before_navigation(row: pd.Series) -> None:
 
     current_label = st.session_state.get(label_key, "")
     current_notes = st.session_state.get(notes_key, "")
-    current_mixed_order = st.session_state.get(mixed_key, "") if current_label == "Mixed" else ""
+    current_mixed_order = st.session_state.get(mixed_key, "") if is_mixed(current_label) else ""
 
     if save_annotation_if_needed(row, current_label, current_notes, current_mixed_order):
         st.session_state.flash_message = "Saved"
@@ -391,36 +401,7 @@ def get_previous_note(df: pd.DataFrame, idx: int) -> str:
     return st.session_state.saved_notes.get(prev_unique, "")
 
 
-def dataset_name_to_aapb_guid(dataset_name: str) -> str:
-    name = str(dataset_name).strip().strip("/")
-
-    # If a full path somehow gets passed, keep only final folder name.
-    name = Path(name).name
-
-    # Remove known prefixes repeatedly.
-    prefixes = ["smo_raw_", "esu_raw_", "spa_raw_", "clips_"]
-    changed = True
-    while changed:
-        changed = False
-        for prefix in prefixes:
-            if name.startswith(prefix):
-                name = name[len(prefix):]
-                changed = True
-
-    # Remove known suffixes repeatedly.
-    suffixes = ["_trimmed_vadish", "_vadish", "_clip"]
-    changed = True
-    while changed:
-        changed = False
-        for suffix in suffixes:
-            if name.endswith(suffix):
-                name = name[:-len(suffix)]
-                changed = True
-
-    return name
-
-
-st.set_page_config(page_title="LID Annotation", layout="centered")
+st.set_page_config(page_title="Spoken Language Annotation", layout="centered")
 st.markdown(
     """
     <style>
@@ -489,7 +470,7 @@ if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
 if not st.session_state.authenticated:
-    st.title(config.get("app_title", "LID Annotation"))
+    st.title(config.get("app_title", "Spoken Language Annotation"))
 
     with st.form("login_form"):
         username = st.text_input("Username")
@@ -529,8 +510,7 @@ if not user_cfg:
     st.error("Your user configuration is missing.")
     st.stop()
 
-labels = get_effective_labels(config, user_cfg)
-df = apply_assignment_filter(load_user_manifests(config, user_cfg), user_cfg)
+df = load_user_manifests(config, user_cfg)
 
 if df.empty:
     st.error("No clips are assigned to this user.")
@@ -562,9 +542,7 @@ idx = st.session_state.idx
 
 row = df.iloc[idx]
 unique_clip_id = str(row["unique_clip_id"])
-
-aapb_guid = dataset_name_to_aapb_guid(row["dataset_name"])
-aapb_url = f"https://americanarchive.org/catalog/{aapb_guid}"
+labels = get_labels(config, row["language"])
 
 start_timer_for_clip(unique_clip_id)
 
@@ -604,19 +582,10 @@ with center:
 
 st.markdown(
     f"<div class='clip-meta'>"
-    f"{row['dataset_name']} &nbsp; · &nbsp; {row['start_sec']:.2f}s – {row['end_sec']:.2f}s"
-    f" &nbsp; · &nbsp; duration {row['duration_sec']:.2f}s"
+    f"{row['dataset_name']} ({row['language']}) &nbsp; · &nbsp; "
+    f"{row['start_ms'] / 1000:.2f}s – {row['end_ms'] / 1000:.2f}s"
+    f" &nbsp; · &nbsp; duration {row['duration_ms'] / 1000:.2f}s"
     f"</div>",
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    f"""
-    <div style='text-align:center; font-size:0.85rem; margin-bottom:0.4rem;'>
-        AAPB source:
-        <a href="{aapb_url}" target="_blank">{aapb_guid}</a>
-    </div>
-    """,
     unsafe_allow_html=True,
 )
 
@@ -642,11 +611,11 @@ selected_label = st.radio(
     format_func=lambda x: "Select..." if x == "" else x,
 )
 
-if selected_label == "Mixed":
+if is_mixed(selected_label):
     st.text_input(
         "Languages in order of appearance",
         key=mixed_key,
-        placeholder="e.g., English → Samoan → English",
+        placeholder="e.g., English → Spanish → English",
         label_visibility="collapsed",
     )
 
@@ -661,7 +630,7 @@ notes = st.text_area(
 item = st.session_state.ann.get(unique_clip_id, {})
 item["label"] = selected_label
 item["notes"] = notes
-item["mixed_order"] = st.session_state.get(mixed_key, "") if selected_label == "Mixed" else ""
+item["mixed_order"] = st.session_state.get(mixed_key, "") if is_mixed(selected_label) else ""
 st.session_state.ann[unique_clip_id] = item
 
 maybe_auto_save_label_only(row, selected_label)

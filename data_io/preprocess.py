@@ -68,7 +68,7 @@ def ffprobe_duration(path):
 
 def run_silencedetect(video_path, log_path):
     cmd = [
-        "ffmpeg", "-y",
+        "ffmpeg", "-nostdin", "-y",
         "-i", str(video_path),
         "-af", f"silencedetect=noise={NOISE_DB}:d={MIN_SIL_DUR}",
         "-f", "null", "-"
@@ -235,7 +235,7 @@ def export_segments(video_path, stem, segments_ms, outdir, source_tag):
         to = f"{end_ms / 1000:.3f}"
 
         mp4_cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-nostdin", "-y",
             "-ss", ss,
             "-to", to,
             "-i", str(video_path),
@@ -247,7 +247,7 @@ def export_segments(video_path, stem, segments_ms, outdir, source_tag):
         subprocess.run(mp4_cmd, check=True)
 
         wav_cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-nostdin", "-y",
             "-ss", ss,
             "-to", to,
             "-i", str(video_path),
