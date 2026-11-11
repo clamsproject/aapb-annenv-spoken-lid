@@ -1,0 +1,25 @@
+{
+  "app_title": "Spoken Language Annotation",
+  "db_path": "annotation.db",
+  "data_basepath": "/path/to/clips",
+  "languages": {
+    "lang1": {
+      "labels": ["Language 1", "English", "Mixed", "Other"],
+      "data_subpath": "lang1"
+    },
+    "lang2": {
+      "labels": ["Language 2", "English", "Mixed", "Other"],
+      "data_subpath": "lang2"
+    }
+  },
+  "users": {
+    "annotator1": {
+      "password_sha256": "<sha256 of the password>",
+      "languages": ["lang1"]
+    },
+    "annotator2": {
+      "password_sha256": "<sha256 of the password>",
+      "languages": ["lang1", "lang2"]
+    }
+  }
+}

@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.idea/
+
+# runtime data: config with passwords, database, exports, media
+app_config.json
+*.db
+*.csv
+*.mp4
+*.wav
