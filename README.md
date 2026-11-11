@@ -5,6 +5,8 @@ A web tool for labeling the language spoken in short video clips. It has two par
 * `data_io/preprocess.py` cuts a video into short speech clips, using the silences in its audio.
 * `app/main.py` is a [Streamlit](https://streamlit.io) app. Annotators sign in, watch the clips of their languages one at a time, and label each clip with a language, "Mixed" or "Other". For a mixed clip they can give the order of the languages, and any clip can have a note. Every save is stored in an SQLite database.
 
+The other scripts in `data_io/`, for sampling clips and exporting annotations, are described in [`data_io/README.md`](data_io/README.md).
+
 ## Requirements
 
 * Python 3.10 or later, with the packages in `requirements.txt`
