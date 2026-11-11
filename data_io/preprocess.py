@@ -234,7 +234,9 @@ def export_segments(video_path, stem, segments_ms, outdir, source_tag):
         ss = f"{start_ms / 1000:.3f}"
         to = f"{end_ms / 1000:.3f}"
 
-        mp4_cmd = [
+        # One ffmpeg run writes both files; the options before each output
+        # file apply to that file only.
+        cmd = [
             "ffmpeg", "-nostdin", "-y",
             "-ss", ss,
             "-to", to,
@@ -242,21 +244,13 @@ def export_segments(video_path, stem, segments_ms, outdir, source_tag):
             "-c:v", "copy",
             "-c:a", "aac",
             "-movflags", "+faststart",
-            str(out_mp4)
-        ]
-        subprocess.run(mp4_cmd, check=True)
-
-        wav_cmd = [
-            "ffmpeg", "-nostdin", "-y",
-            "-ss", ss,
-            "-to", to,
-            "-i", str(video_path),
+            str(out_mp4),
             "-vn",
             "-ac", "1",
             "-ar", "16000",
             str(out_wav)
         ]
-        subprocess.run(wav_cmd, check=True)
+        subprocess.run(cmd, check=True)
 
         rows.append({
             "clip_id": clip_id,
