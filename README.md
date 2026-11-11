@@ -29,10 +29,11 @@ The app needs a config file, and does not start without one. Copy [`app/app_conf
 * `data_basepath` - the directory of the clips.
 * `languages` - one entry per language, with the labels of its clips (`labels`) and the directory of its clips under `data_basepath` (`data_subpath`).
 * `users` - one entry per user name, with a password hash (`password_sha256`) and the languages of the clips that the user annotates (`languages`).
+* `source_url` (optional) - a link to the source of each video, with `{guid}` for the video stem without suffixes such as `.mp4`, or `{stem}` for the stem; for example `https://americanarchive.org/catalog/{guid}`.
 
 Relative paths in `db_path` and `data_basepath` are relative to the directory of the config file. Git does not track `app/app_config.json` or the database.
 
-A user sees the clips of each of the user's languages, and each clip has the labels of its own language. The label `Mixed` opens a field for the order of the languages.
+A user sees the clips of each of the user's languages, video by video, and each clip has the labels of its own language. Of a video with a sample (see [`data_io/README.md`](data_io/README.md#sampling)), only the sampled clips are shown. Above each clip, the app shows the progress of its video: the number of clips, the number of sampled clips (for a sampled video), and the number of clips done. The label `Mixed` opens a field for the order of the languages.
 
 To make a password hash:
 

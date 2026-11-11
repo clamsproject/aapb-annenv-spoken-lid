@@ -39,7 +39,7 @@ The sampling scripts add this table to the annotation database, with one row per
 * `stratum` - the stratum or part of the video that the clip was chosen from, or empty
 * `created_at` - when the sample was stored
 
-The app does not read this table yet: it shows all clips of a video.
+The app shows only the sampled clips of a video with a sample, and all clips of a video without one. It stops with an error when a sample names a clip that is not in the manifest of its video, for example after the video was segmented again.
 
 ## Internal notes
 

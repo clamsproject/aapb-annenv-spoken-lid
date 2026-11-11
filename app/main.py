@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -25,6 +26,10 @@ REQUIRED_COLS = {
 
 # The label that opens the field for the order of the languages
 MIXED = "Mixed"
+
+# Suffixes that video stems can carry after the GUID; export.py removes the
+# same suffixes.
+GUID_SUFFIX = re.compile(r"(_trimmed|\.mp4|\.h264)$")
 
 
 def is_mixed(label: str) -> bool:
@@ -184,6 +189,65 @@ def load_user_manifests(config: dict[str, Any], user_cfg: dict[str, Any]) -> pd.
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
+
+
+def load_samples() -> dict[str, set[str]]:
+    """
+    :returns: the sampled clip IDs of each sampled video, from the
+        `clip_samples` table that the sampling scripts of data_io write;
+        empty when the table does not exist
+    """
+    conn = sqlite3.connect(DATABASE_PATH)
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'clip_samples'").fetchone()
+        if not exists:
+            return {}
+        samples = {}
+        for stem, clip_id in conn.execute(
+                "SELECT dataset_name, clip_id FROM clip_samples"):
+            samples.setdefault(stem, set()).add(clip_id)
+        return samples
+    finally:
+        conn.close()
+
+
+def apply_samples(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Keeps only the sampled clips of each sampled video, and all clips of
+    the other videos. Adds `video_clips`, the number of clips of the video,
+    and `sampled`, whether the video has a sample.
+    """
+    df = df.copy()
+    df["video_clips"] = df.groupby("dataset_name")["clip_id"].transform("size")
+    samples = {stem: ids for stem, ids in load_samples().items()
+               if stem in set(df["dataset_name"])}
+    for stem, clip_ids in samples.items():
+        missing = clip_ids - set(df.loc[df["dataset_name"] == stem, "clip_id"])
+        if missing:
+            st.error(f"The sample of {stem} has {len(missing)} clips that "
+                     f"are not in its manifest, e.g. {sorted(missing)[0]}.")
+            st.stop()
+    keep = [stem not in samples or clip_id in samples[stem]
+            for stem, clip_id in zip(df["dataset_name"], df["clip_id"])]
+    df = df[keep].reset_index(drop=True)
+    df["sampled"] = df["dataset_name"].isin(samples)
+    return df
+
+
+def source_link(config: dict[str, Any], stem: str) -> str:
+    """
+    :returns: an HTML link to the source of a video, from the `source_url`
+        template of the config (`{guid}` is the stem without suffixes such
+        as `.mp4`), or an empty string without a template
+    """
+    template = config.get("source_url")
+    if not template:
+        return ""
+    guid = GUID_SUFFIX.sub("", stem)
+    url = template.format(guid=guid, stem=stem)
+    return f'<a href="{url}" target="_blank">{guid}</a>'
 
 
 def load_latest_annotations(username: str) -> dict[str, dict[str, Any]]:
@@ -515,6 +579,7 @@ df = load_user_manifests(config, user_cfg)
 if df.empty:
     st.error("No clips are assigned to this user.")
     st.stop()
+df = apply_samples(df)
 
 if "ann" not in st.session_state:
     st.session_state.ann = load_latest_annotations(username)
@@ -547,17 +612,32 @@ labels = get_labels(config, row["language"])
 start_timer_for_clip(unique_clip_id)
 
 current_annotations = st.session_state.ann
-assigned_unique_ids = set(df["unique_clip_id"].astype(str))
-complete_count = sum(
-    1
-    for uid in assigned_unique_ids
-    if str(current_annotations.get(uid, {}).get("label", "")).strip()
-)
 total = len(df)
 
-st.progress(complete_count / total if total else 0.0)
+# Progress of the current video only; the totals over all videos are not
+# shown.
+video_idx = list(df.index[df["dataset_name"] == row["dataset_name"]])
+video_pos = video_idx.index(idx) + 1
+# A label chosen on this run is in the widget state before it is saved.
+done_count = sum(
+    1
+    for uid in df.loc[video_idx, "unique_clip_id"].astype(str)
+    if str(st.session_state.get(
+        f"label_{uid}",
+        current_annotations.get(uid, {}).get("label", ""))).strip()
+)
+counts = [f"{int(row['video_clips'])} clips"]
+if row["sampled"]:
+    counts.append(f"{len(video_idx)} sampled")
+counts.append(f"{done_count} done")
+link = source_link(config, row["dataset_name"])
+
+st.progress(done_count / len(video_idx))
 st.markdown(
-    f"<div class='small-muted'>Progress {complete_count}/{total} &nbsp; | &nbsp; Clip {idx + 1}/{total}</div>",
+    f"<div class='small-muted'>{row['dataset_name']} &nbsp; · &nbsp; "
+    + " &nbsp; · &nbsp; ".join(counts)
+    + (f" &nbsp; · &nbsp; {link}" if link else "")
+    + "</div>",
     unsafe_allow_html=True,
 )
 
@@ -566,7 +646,7 @@ if st.session_state.flash_message:
     st.session_state.flash_message = ""
 
 st.markdown(
-    f"<h4 style='text-align:center;'>Clip {idx + 1}</h4>",
+    f"<h4 style='text-align:center;'>Clip {video_pos}</h4>",
     unsafe_allow_html=True,
 )
 
@@ -582,7 +662,7 @@ with center:
 
 st.markdown(
     f"<div class='clip-meta'>"
-    f"{row['dataset_name']} ({row['language']}) &nbsp; · &nbsp; "
+    f"{row['language']} &nbsp; · &nbsp; "
     f"{row['start_ms'] / 1000:.2f}s – {row['end_ms'] / 1000:.2f}s"
     f" &nbsp; · &nbsp; duration {row['duration_ms'] / 1000:.2f}s"
     f"</div>",
@@ -652,15 +732,15 @@ with st.expander("More options"):
     st.checkbox("Autoplay", key="autoplay_enabled")
 
     jump_to = st.number_input(
-        "Jump to clip #",
+        "Jump to clip # of this video",
         min_value=1,
-        max_value=total,
-        value=idx + 1,
+        max_value=len(video_idx),
+        value=video_pos,
         step=1,
     )
     if st.button("Jump"):
         save_current_clip_before_navigation(row)
-        st.session_state.idx = clamp_idx(int(jump_to) - 1, total)
+        st.session_state.idx = int(video_idx[int(jump_to) - 1])
         st.rerun()
 
     unfinished_indices = [
