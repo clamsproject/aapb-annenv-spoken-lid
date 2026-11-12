@@ -5,6 +5,8 @@ A web tool for labeling the language spoken in short video clips. It has two par
 * `data_io/preprocess.py` cuts a video into short speech clips, using the silences in its audio.
 * `app/main.py` is a [Streamlit](https://streamlit.io) app. Annotators sign in, watch the clips of their languages one at a time, and label each clip with a language, "Mixed" or "Other". For a mixed clip they can give the order of the languages, and any clip can have a note. Every save is stored in an SQLite database.
 
+The other scripts in `data_io/`, for sampling clips and exporting annotations, are described in [`data_io/README.md`](data_io/README.md).
+
 ## Requirements
 
 * Python 3.10 or later, with the packages in `requirements.txt`
@@ -27,10 +29,11 @@ The app needs a config file, and does not start without one. Copy [`app/app_conf
 * `data_basepath` - the directory of the clips.
 * `languages` - one entry per language, with the labels of its clips (`labels`) and the directory of its clips under `data_basepath` (`data_subpath`).
 * `users` - one entry per user name, with a password hash (`password_sha256`) and the languages of the clips that the user annotates (`languages`).
+* `source_url` (optional) - a link to the source of each video, with `{guid}` for the video stem without suffixes such as `.mp4`, or `{stem}` for the stem; for example `https://americanarchive.org/catalog/{guid}`.
 
 Relative paths in `db_path` and `data_basepath` are relative to the directory of the config file. Git does not track `app/app_config.json` or the database.
 
-A user sees the clips of each of the user's languages, and each clip has the labels of its own language. The label `Mixed` opens a field for the order of the languages.
+A user sees the clips of each of the user's languages, video by video, and each clip has the labels of its own language. Of a video with a sample (see [`data_io/README.md`](data_io/README.md#sampling)), only the sampled clips are shown. Above each clip, the app shows the progress of its video: the number of clips, the number of sampled clips (for a sampled video), and the number of clips done. The label `Mixed` opens a field for the order of the languages.
 
 To make a password hash:
 
